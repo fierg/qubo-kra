@@ -4,7 +4,7 @@ import dimod
 import greedy
 import neal
 from dimod import BinaryQuadraticModel
-#logging.getLogger('dwave.cloud.client.base').setLevel(logging.WARNING)
+# logging.getLogger('dwave.cloud.client.base').setLevel(logging.WARNING)
 from dwave.system import LeapHybridSampler, DWaveSampler, EmbeddingComposite
 import numpy as np
 import modules.config as config
@@ -39,7 +39,7 @@ class Subkernel(object):
         logging.debug("Setting row column values in matrix ...")
         self.set_matrix_row_column_values()
 
-        # logging.info(self.matrix)
+        logging.info(self.matrix)
 
     # Create a hash-map, which gives every candidate an index
     # (values 0,...,len(candidates)-1).
@@ -178,6 +178,9 @@ class Subkernel(object):
         logging.info(f'Subkernel size: {str(kernelsize)}, QUBO matrix entries: {self.matrix.size}')
         label = 'QUBO - KRA - [' + str(kernelsize) + '] - ' + filename
         reads = config.num_reads
+        if config.chain_strength is not None:
+            logging.info(f'Using chain strength of {config.chain_strength}.')
+
         if isinstance(reads, type(None)):
             reads = 'default'
         start = time.time()
@@ -197,10 +200,11 @@ class Subkernel(object):
             logging.info(f'Solving kernel with the simulated annealing solver with {reads} reads ...')
             sampler = neal.SimulatedAnnealingSampler()
             if reads == 'default':
-                sample_set = sampler.sample(bqm, label=label, num_reads=10, max_answers=10)
+                sample_set = sampler.sample(bqm, label=label, num_reads=10, max_answers=10,
+                                            chain_strength=config.chain_strength)
             else:
-                sample_set = sampler.sample(bqm, label=label, num_reads=config.num_reads, max_answers=10)
-            # ,answer_mode='raw')
+                sample_set = sampler.sample(bqm, label=label, num_reads=config.num_reads, max_answers=10,
+                                            chain_strength=config.chain_strength)
         elif config.solver == "hybrid":
             logging.info("Solving kernel with the leap hybrid solver...")
             sampler = LeapHybridSampler()
@@ -209,15 +213,20 @@ class Subkernel(object):
             logging.info(f'Solving kernel with the DWave solver with {reads} reads ...')
             sampler = EmbeddingComposite(DWaveSampler(solver={'topology__type': 'pegasus'}))
             if reads == 'default':
-                sample_set = sampler.sample(bqm, label=label, num_reads=10, max_answers=10, answer_mode='histogram')
+                sample_set = sampler.sample(bqm, label=label, num_reads=10, max_answers=10, answer_mode='histogram',
+                                            chain_strength=config.chain_strength)
             else:
-                sample_set = sampler.sample(bqm, label=label, num_reads=config.num_reads, max_answers=10, answer_mode='histogram')
+                sample_set = sampler.sample(bqm, label=label, num_reads=config.num_reads, max_answers=10,
+                                            answer_mode='histogram',
+                                            chain_strength=config.chain_strength)
 
         else:
             raise ValueError('Unknown solver: ' + config.solver)
 
         fin = time.time()
-        logging.info("Total sample took " + str(fin - start) + " seconds")
+        if config.quiet:
+            print(f'Subkernel run time: \n {str(fin - start)}')
+        logging.info(f'Total sample took {str(fin - start)} seconds')
         sample = sample_set.first.sample
         info = sample_set.info
 
@@ -236,8 +245,13 @@ class Subkernel(object):
         if config.solver == "hybrid" or config.solver == "dwave" or config.solver == "simulated":
             samples = sorted(sample_set.record, key=lambda x: x[1])
             energies = list(map(lambda x: x[1], samples))
-            logging.info(
-                f'Best Energy: {energies[0]}, Avg: {sum(energies) / len(energies)}, Median: {statistics.median(energies)} ')
+
+            if config.quiet:
+                print(
+                    f'Best Energy:\n{energies[0]}\nAvg:\n{sum(energies) / len(energies)}\nMedian:\n{statistics.median(energies)}')
+            else:
+                logging.info(
+                    f'Best Energy: {energies[0]}, Avg: {sum(energies) / len(energies)}, Median: {statistics.median(energies)}')
 
             diversity = []
             for sample in samples:

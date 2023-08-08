@@ -2,12 +2,13 @@ import json
 
 import modules.config as config
 import modules.data as data
-import classes.pairs as pair
 import classes.subkernel as subkernel
 import classes.candidatesplit as candidatesplit
+from classes import pairs
 from classes.graph import *
 from pathlib import Path
 import logging
+
 
 initialized = False
 candidates_pairs = {}
@@ -35,46 +36,50 @@ def generate_solution():
     logging.info(solution)
 
     if config.quality:
-        try:
-            total_costs = 0
+        check_cost_for_solution(solution)
 
-            for a in range(0, len(solution[0])):
-                for b in range(a + 1, len(solution[0])):
-                    sa = solution[0][a]
-                    sb = solution[0][b]
-                    total_costs += candidates_pairs[str(sa)][str(sb)].cost
 
-            logging.info("Cost for solution: " + str(total_costs))
+def check_cost_for_solution(solution):
+    try:
+        total_costs = 0
 
-            if Path('../data/solutions/generated-costs.json').is_file():
-                with open('../data/solutions/generated-costs.json', 'r') as f:
+        for a in range(0, len(solution[0])):
+            for b in range(a + 1, len(solution[0])):
+                sa = solution[0][a]
+                sb = solution[0][b]
+                total_costs += candidates_pairs[str(sa)][str(sb)].cost
+
+        logging.info("Cost for solution: " + str(total_costs))
+
+        if Path('../data/solutions/generated-costs.json').is_file():
+            with open('../data/solutions/generated-costs.json', 'r') as f:
+                solutions = json.load(f)
+        else:
+            if Path('data/solutions/generated-costs.json').is_file():
+                with open('data/solutions/generated-costs.json', 'r') as f:
                     solutions = json.load(f)
             else:
-                if Path('data/solutions/generated-costs.json').is_file():
-                    with open('data/solutions/generated-costs.json', 'r') as f:
-                        solutions = json.load(f)
-                else:
-                    raise KeyError
-
-            file = Path(config.inputfile)
-            if file.parts[len(file.parts) - 2] == 'Formula1':
-                expected = int(solutions[f'data/original/{file.name}'])
-            elif file.parts[len(file.parts) - 3] == "GeneratedRandom":
-                expected = int(solutions[f'data/generated/{file.parts[len(file.parts) - 2]}/{file.name}'])
-            elif str(file.parts[len(file.parts) - 2]).startswith("missing"):
-                expected = int(solutions[f'data/original/{file.name}'])
-            else:
                 raise KeyError
-            logging.info("Cost for Optimal solution: " + str(expected))
 
-            relative_cost = ((total_costs / expected) - 1) * 100
-            if total_costs < expected:
-                logging.info("############ ????")
-            else:
-                logging.info("Solution is +" + str(relative_cost) + "% of the optimal cost.")
+        file = Path(config.inputfile)
+        if file.parts[len(file.parts) - 2] == 'original':
+            expected = int(solutions[f'data/original/{file.name}'])
+        elif file.parts[len(file.parts) - 3] == "generated":
+            expected = int(solutions[f'data/generated/{file.parts[len(file.parts) - 2]}/{file.name}'])
+        elif str(file.parts[len(file.parts) - 2]).startswith("missing"):
+            expected = int(solutions[f'data/original/{file.name}'])
+        else:
+            raise KeyError
+        logging.info("Cost for Optimal solution: " + str(expected))
 
-        except KeyError:
-            logging.info("No solution to validate found for: " + str(config.inputfile))
+        relative_cost = ((total_costs / expected) - 1) * 100
+        if total_costs < expected:
+            logging.info("############ ????")
+        else:
+            logging.info("Solution is +" + str(relative_cost) + "% of the optimal cost.")
+
+    except KeyError:
+        logging.info("No solution to validate found for: " + str(config.inputfile))
 
 
 # Reset all kernel variables
@@ -133,8 +138,6 @@ def build_kernel():
     # Set the kernal variable indicating that it is initialized
     initialized = True
 
-
-# Generate a dict of pair objects for every candidate
 def generate_pairs():
     # Define global variables to prevent shadowing
     global candidates_pairs
@@ -148,8 +151,9 @@ def generate_pairs():
         for j in range(0, len(data.final_candidates)):
             # Do not create a pair if both candidates are equal
             if i != j:
-                new_pair = pair.Pairs(data.final_candidates[i], data.final_candidates[j], data.rankings_list)
+                new_pair = pairs.Pairs(data.final_candidates[i], data.final_candidates[j], data.rankings_list)
                 candidates_pairs[data.final_candidates[i]][data.final_candidates[j]] = new_pair
+
 
 
 # Initialize the lists of dirty_candidates and clean_candidates. The list of clean_candidates is ordered.
@@ -157,6 +161,7 @@ def get_non_dirty_candidates():
     # Define global variables to prevent shadowing
     global dirty_candidates
     global clean_candidates
+    global candidates_pairs
 
     # Loop over all final candidates
     for candidate in data.final_candidates:
@@ -256,6 +261,10 @@ def solve_kernel(filename):
     if config.solver == "dwave" or config.solver == "hybrid" or config.solver == "simulated":
         diverse_solutions = []
         cleanup_diverse_kernels(diverse_kernels)
+
+        if not diverse_kernels:
+            logging.error("All kernel samples invalid. No solution found.")
+            exit(1)
         diversify(diverse_solutions, diverse_kernels)
         analyze_diverse_solutions(diverse_solutions)
 
@@ -271,11 +280,19 @@ def analyze_diverse_solutions(diverse_solutions):
     kt_distances = {}
     i_s = 0
     for s in diverse_solutions:
+        if len(s) < len(data.final_candidates):
+            diverse_solutions.remove(s)
+            continue
+
         logging.info(s)
         i_s1 = 0
         for s1 in diverse_solutions:
             if s != s1:
-                ranking_info = candidatesplit.candidatesplit(s[1], [s[1], s1[1]])
+                try:
+                    ranking_info = candidatesplit.candidatesplit(s[1], [s[1], s1[1]])
+                except ValueError:
+                    diverse_solutions.remove(s)
+                    continue
                 kt_pairs = ranking_info.candidate_pairs
                 kt_distance = 0
                 for a in kt_pairs:
@@ -299,7 +316,10 @@ def analyze_diverse_solutions(diverse_solutions):
 
 def diversify(diverse_solutions, diverse_kernels, kernel_index=0, subsolution=[]):
     if kernel_index == len(diverse_kernels):
-        cost = get_rank_value(subsolution)
+        try:
+            cost = get_rank_value(subsolution)
+        except KeyError:
+            return
 
         if len(diverse_solutions) == 0:
             diverse_solutions.append([cost, subsolution])
@@ -324,11 +344,10 @@ def diversify(diverse_solutions, diverse_kernels, kernel_index=0, subsolution=[]
 def get_rank_value(solution):
     total_costs = 0
 
-    for a in range(0, len(solution)):
+    for a in range(0, len(solution) - 1):
         for b in range(a + 1, len(solution)):
             sa = solution[a]
             sb = solution[b]
             total_costs += candidates_pairs[str(sa)][str(sb)].cost
 
     return total_costs
-
